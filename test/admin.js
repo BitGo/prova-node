@@ -21,6 +21,10 @@ const provaScript = function(addr) {
   return prova.Address.fromBase58(addr).toScript();
 };
 
+const nullDataScript = function(hex) {
+  return prova.script.nullData.output.encode(new Buffer(hex, 'hex'))
+};
+
 const makeAdminTx = co(function *(node, threadId, signingKeys, munge) {
   const threadTip = yield node.getThreadTip(threadId);
   var builder = new prova.TransactionBuilder(prova.networks.rmgTest);
@@ -117,6 +121,30 @@ describe('Admin Transactions', () => {
         throw new Error('should not reach');
       } catch (e) {
         e.message.should.equal('TX rejected: transaction output 1: admin output only allowed at position 0.');
+      }
+    }));
+
+    it('should fail with random nulldata extra output', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.addOutput(nullDataScript('deadbeef'), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: admin transaction with invalid admin operation found.');
+      }
+    }));
+
+    it('should fail with nonzero value on thread output', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.tx.outs[0].value = 1;
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: admin transaction with non-zero value output #0.');
       }
     }));
 
