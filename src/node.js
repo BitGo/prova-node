@@ -78,4 +78,15 @@ ProvaNode.prototype.getThreadTip = co(function *(threadId) {
   };
 });
 
+ProvaNode.prototype.getCoinbaseTx = co(function *(blocksAgo) {
+  const info = yield this.getinfo();
+  const height = info.blocks;
+  const blockhash = yield this.getblockhash(height - blocksAgo);
+  const block = yield this.getblock(blockhash, true);
+  const txid = block.tx[0];
+  const tx = yield this.getrawtransaction(txid, true);
+  console.dir(tx);
+  return tx;
+});
+
 module.exports = ProvaNode;

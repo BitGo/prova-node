@@ -11,9 +11,14 @@ var rootKeys = ["eaf02ca348c524e6392655ba4d29603cd1a7347d9d65cfe93ce1ebffdca2269
 });
 
 let node;
+const address = 'TCq7ZvyjTugZ3xDY8m1Mdgm95v4QmMpMfm3Fg8GCeE1uf';
 
 const adminThreadScript = function(threadId) {
   return new Buffer('0' + threadId + 'bb', 'hex');
+};
+
+const provaScript = function(addr) {
+  return prova.Address.fromBase58(addr).toScript();
 };
 
 const makeAdminTx = co(function *(node, threadId, signingKeys, munge) {
@@ -36,9 +41,10 @@ const makeAdminTx = co(function *(node, threadId, signingKeys, munge) {
 
 describe('Admin Transactions', () => {
 
-  before(function() {
+  before(co(function *() {
     node = new ProvaNode('localhost', 18334, 'user', 'pass');
-  });
+    yield node.generate(1); // TODO: make 100, after we do chain reset each time
+  }));
 
   describe('Root Thread', () => {
 
@@ -61,6 +67,56 @@ describe('Admin Transactions', () => {
         throw new Error('should not reach');
       } catch (e) {
         e.message.should.equal('TX rejected: admin transaction with no admin operations.');
+      }
+    }));
+
+    it('should fail with additional root thread output', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.addOutput(adminThreadScript(0), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: transaction output 1: admin output only allowed at position 0.');
+      }
+    }));
+
+    it('should fail with additional other thread output', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.addOutput(adminThreadScript(1), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: admin transaction with invalid admin operation found.');
+      }
+    }));
+
+    it('should fail with wrong thread output', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.tx.outs = [];
+        builder.addOutput(adminThreadScript(1), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: transaction is not of an allowed form');
+      }
+    }));
+
+    it('should fail if thread output not first', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.addOutput(provaScript(address), 0);
+        builder.tx.outs.reverse();
+      });
+      try {
+        yield node.sendrawtransaction(tx.build().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.equal('TX rejected: transaction output 1: admin output only allowed at position 0.');
       }
     }));
 
