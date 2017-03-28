@@ -1,0 +1,19 @@
+{
+  "name": "prova-node",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bluebird": "^3.5.0",
+    "json-rpc2": "^1.0.2",
+    "lodash": "^4.17.4",
+    "prova": "git+ssh://git@github.com:BitGo/provajs-lib.git",
+    "prova-admin": "git+ssh://git@github.com:BitGo/prova-admin.git",
+    "q": "^1.5.0"
+  }
+}
