@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "./node_modules/.bin/mocha ./test --recursive -t 15000"
   },
   "author": "",
   "license": "ISC",
@@ -14,6 +14,7 @@
     "lodash": "^4.17.4",
     "prova": "git+ssh://git@github.com:BitGo/provajs-lib.git",
     "prova-admin": "git+ssh://git@github.com:BitGo/prova-admin.git",
-    "q": "^1.5.0"
+    "q": "^1.5.0",
+    "should": "^11.2.1"
   }
 }

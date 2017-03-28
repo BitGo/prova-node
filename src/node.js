@@ -1,4 +1,6 @@
 const rpc = require('json-rpc2');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
 const Q = require('q');
 
 class ProvaNode {
@@ -63,7 +65,16 @@ const methods = [
 
 methods.forEach(function(method) {
   ProvaNode.prototype[method] = function() {
-    return this.callRPC(method, this.args);
+    return this.callRPC(method, Array.prototype.slice.call(arguments));
+  };
+});
+
+ProvaNode.prototype.getThreadTip = co(function *(threadId) {
+  const adminInfo = yield this.getadmininfo();
+  var parts = adminInfo.threadtips[threadId].outpoint.split(':');
+  return {
+    txid: parts[0],
+    vout: Number(parts[1])
   };
 });
 
