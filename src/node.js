@@ -84,8 +84,7 @@ ProvaNode.prototype.getCoinbaseTx = co(function *(blocksAgo) {
   const blockhash = yield this.getblockhash(height - blocksAgo);
   const block = yield this.getblock(blockhash, true);
   const txid = block.tx[0];
-  const tx = yield this.getrawtransaction(txid, true);
-  console.dir(tx);
+  const tx = yield this.getrawtransaction(txid, 1);
   return tx;
 });
 
