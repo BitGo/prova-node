@@ -6,6 +6,7 @@ const provaAdmin = require('prova-admin');
 const should = require('should');
 const crypto = require('crypto');
 const _ = require('lodash');
+const assert = require('assert');
 
 const AdminOp = {
   IssueKeyAdd: 0x01,
@@ -18,9 +19,14 @@ const AdminOp = {
   ASPKeyRevoke: 0x14
 };
 
-var rootKeys = ["eaf02ca348c524e6392655ba4d29603cd1a7347d9d65cfe93ce1ebffdca22694", "2b8c52b77b327c755b9b375500d3f4b2da9b0a1ff65f6891d311fe94295bc26a"].map(function(hex) {
-  return prova.ECPair.fromPrivateKeyBuffer(new Buffer(hex, 'hex'), prova.networks.rmgTest);
-});
+const AdminOpNames = _.invert(AdminOp);
+
+var rootKeys = [
+  "eaf02ca348c524e6392655ba4d29603cd1a7347d9d65cfe93ce1ebffdca22694",
+  "2b8c52b77b327c755b9b375500d3f4b2da9b0a1ff65f6891d311fe94295bc26a"
+].map((hex) => prova.ECPair.fromPrivateKeyBuffer(new Buffer(hex, 'hex'), prova.networks.rmgTest));
+
+var rootPubKeys = rootKeys.map((k) => k.getPublicKeyBuffer().toString('hex'));
 
 let node;
 let provisionKeys = [];
@@ -40,6 +46,7 @@ const nullDataScript = function(hex) {
 };
 
 const adminKeyScript = function(opType, key, keyId) {
+  assert(AdminOpNames[opType]);
   var pieces = [];
   pieces.push(new Buffer([opType]));
   pieces.push(new Buffer(key, 'hex'));
@@ -58,6 +65,11 @@ const expectSendError = co(function *(node, txHex, expectedError) {
   } catch (e) {
     e.message.should.equal(expectedError);
   }
+});
+
+const expectMempoolSize = co(function *(node, size) {
+  const info = yield node.getmpoolinfo();
+  info.size.should.equal(size);
 });
 
 const makeAdminTxBuilder = co(function *(node, threadId, signingKeys, munge) {
@@ -88,8 +100,13 @@ const makeAdminTx = co(function *(node, threadId, signingKeys, munge) {
 describe('Admin Transactions', () => {
 
   before(co(function *() {
-    node = new ProvaNode('localhost', 18334, 'user', 'pass');
-    yield node.generate(105); // TODO: make 100, after we do chain reset each time
+    node = new ProvaNode({
+      host: 'localhost',
+      port: 18334,
+      username: 'user',
+      password: 'pass'
+    });
+    // yield node.generate(105); // TODO: make 100, after we do chain reset each time
   }));
 
   describe('Root Thread', () => {
@@ -201,6 +218,21 @@ describe('Admin Transactions', () => {
       }
     }));
 
+    it('should fail if incorrectly signed', co(function *() {
+      const fakeKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      const txBuilder = yield makeAdminTxBuilder(node, 0, fakeKeys, function(builder) {
+        builder.addOutput(addRandomProvisionKeyScript(), 0);
+      });
+      try {
+        yield node.sendrawtransaction(txBuilder.buildIncomplete().toHex());
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.containEql('TX rejected: failed to validate input');
+      }
+    }));
+
+    // Provision key add/remove ops
+
     it('should add a single provision key', co(function *() {
       const provisionKey = prova.ECPair.makeRandom();
       const pubkey = provisionKey.getPublicKeyBuffer().toString('hex');
@@ -235,6 +267,102 @@ describe('Admin Transactions', () => {
         info.provisionkeys.should.containEql(key);
       });
     }));
+
+    it('should remove provision keys', co(function *() {
+      let info = yield node.getadmininfo();
+      const keysToRemove = info.provisionkeys.slice(3); // remove all but 3
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        keysToRemove.forEach(function(key) {
+          builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyRevoke, key), 0);
+        });
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+      info = yield node.getadmininfo();
+      keysToRemove.forEach(function(key) {
+        info.provisionkeys.should.not.containEql(key);
+      });
+    }));
+
+    it('should fail removing nonexistent provision key', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        var keyHex = prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex');
+        builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyRevoke, keyHex), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx);
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.containEql('tries to remove non-existing key');
+      }
+    }));
+
+    // Issue key add/remove ops
+
+    it('should add a single issue key', co(function *() {
+      const key = prova.ECPair.makeRandom();
+      const pubkey = key.getPublicKeyBuffer().toString('hex');
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, pubkey), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      let info = yield node.getadmininfo();
+      if (info.issuekeys) {
+        info.issuekeys.should.not.containEql(pubkey);
+      }
+      yield node.generate(1);
+      info = yield node.getadmininfo();
+      info.issuekeys.should.containEql(pubkey);
+    }));
+
+    it('should add 5 issue keys', co(function *() {
+      const keys = _.range(0, 5).map(() => prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex'));
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        keys.forEach(function(key) {
+          builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, key), 0);
+        });
+      });
+      yield node.sendrawtransaction(tx);
+      let info = yield node.getadmininfo();
+      keys.forEach(function(key) {
+        info.issuekeys.should.not.containEql(key);
+      });
+      yield node.generate(1);
+      info = yield node.getadmininfo();
+      keys.forEach(function(key) {
+        info.issuekeys.should.containEql(key);
+      });
+    }));
+
+    it('should remove issue keys', co(function *() {
+      let info = yield node.getadmininfo();
+      const keysToRemove = info.issuekeys.slice(3); // remove all but 3
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        keysToRemove.forEach(function(key) {
+          builder.addOutput(adminKeyScript(AdminOp.IssueKeyRevoke, key), 0);
+        });
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+      info = yield node.getadmininfo();
+      keysToRemove.forEach(function(key) {
+        info.issuekeys.should.not.containEql(key);
+      });
+    }));
+
+    it('should fail removing nonexistent issue key', co(function *() {
+      const tx = yield makeAdminTx(node, 0, rootKeys, function(builder) {
+        var keyHex = prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex');
+        builder.addOutput(adminKeyScript(AdminOp.IssueKeyRevoke, keyHex), 0);
+      });
+      try {
+        yield node.sendrawtransaction(tx);
+        throw new Error('should not reach');
+      } catch (e) {
+        e.message.should.containEql('tries to remove non-existing key');
+      }
+    }));
+
 
   });
 });

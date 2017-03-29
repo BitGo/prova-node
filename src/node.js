@@ -5,7 +5,7 @@ const Q = require('q');
 
 class ProvaNode {
 
-  constructor(host, port, username, password) {
+  constructor({host, port, rpcport, username, password}) {
     this.host = host;
     this.port = port;
     this.client = rpc.Client.$create(port, host, username, password);
@@ -89,3 +89,7 @@ ProvaNode.prototype.getCoinbaseTx = co(function *(blocksAgo) {
 });
 
 module.exports = ProvaNode;
+// {
+//   ProvaNode: ProvaNode,
+//   ProvaRegTestNode: ProvaRegTestNode
+// };
