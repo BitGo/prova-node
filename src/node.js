@@ -7,6 +7,7 @@ const execAsync = Promise.promisify(require('child_process').exec);
 const cuid = require('cuid');
 const fs = require('fs');
 const util = require('util');
+const prova = require('prova');
 
 class ProvaNode {
 
@@ -105,7 +106,10 @@ class ProvaTestNode extends ProvaNode {
       password: 'test'
     });
     this.port = port;
-    this.miningAddress = 'TCq7ZvyjTugZ3xDY8m1Mdgm95v4QmQ1KUZ3N3Ldf45LDm';
+
+    this.addressKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+    this.miningAddress = new prova.Address(this.addressKey.getPublicKeyBuffer(), 1, 2, prova.networks.rmgTest);
+
     this.validateKeys = [
       '4015289a228658047520f0d0abe7ad49abc77f6be0be63b36b94b83c2d1fd977',
       '9ade85268e57b7c97af9f84e0d5d96138eae2b1d7ae96c5ab849f58551ab9147',
@@ -122,7 +126,7 @@ ProvaTestNode.prototype.start = co(function *() {
   const args = [
     '--regtest',
     '--txindex',
-    util.format('--miningaddr=%s', this.miningAddress),
+    util.format('--miningaddr=%s', this.miningAddress.toString()),
     util.format('--listen=%s:%s', this.host, this.port),
     util.format('--rpcuser=%s', this.username),
     util.format('--rpcpass=%s', this.password),
@@ -131,13 +135,13 @@ ProvaTestNode.prototype.start = co(function *() {
   ];
   this.proc = spawn('prova', args);
 
-  // this.proc.stderr.on('data', (data) => {
-  //   console.log(`stderr: ${data}`);
-  // });
+  this.proc.stderr.on('data', (data) => {
+    // console.log(`stderr: ${data}`);
+  });
 
-  // this.proc.stdout.on('data', (data) => {
-  //   console.log(`stdout: ${data}`);
-  // });
+  this.proc.stdout.on('data', (data) => {
+    // console.log(`stdout: ${data}`);
+  });
 
   this.proc.on('close', (code) => {
     this.done = true;
