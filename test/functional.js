@@ -708,7 +708,6 @@ describe('Functional Tests', () => {
   describe('Standard Transactions', () => {
 
     let issueKeys = [];
-    let supply = 0;
     let issueTxid;
     let issueVouts;
     let coinbaseTxid;
@@ -738,7 +737,6 @@ describe('Functional Tests', () => {
       issueTxid = yield node.sendrawtransaction(tx);
       issueVouts = _.range(1, 10);
       yield node.generate(1);
-      supply = info.totalsupply;
     }));
 
     it('should fail to spend with too high a fee', co(function *() {
@@ -748,6 +746,26 @@ describe('Functional Tests', () => {
       rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: transaction fee 5000001 is greater than the maximum fee limit 5000000');
+    }));
+
+    it('should fail if outputs greater than inputs', co(function *() {
+      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(script, 1e9 + 1);
+      rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'TX rejected: total value of all transaction inputs for transaction');
+    }));
+
+    it('should fail if more than 1 nulldata output', co(function *() {
+      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(script, 1e9);
+      builder.addOutput(nullDataScript('deadbeef01'), 0);
+      builder.addOutput(nullDataScript('deadbeef02'), 0);
+      rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'some error');
     }));
 
     it('should spend successfully with max fee', co(function *() {
