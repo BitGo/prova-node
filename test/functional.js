@@ -765,7 +765,7 @@ describe('Functional Tests', () => {
       builder.addOutput(nullDataScript('deadbeef02'), 0);
       rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
       const tx = builder.build().toHex();
-      yield expectSendError(node, tx, 'some error');
+      yield expectSendError(node, tx, 'TX rejected: transaction is not of an allowed form');
     }));
 
     it('should spend successfully with max fee', co(function *() {
