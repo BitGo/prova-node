@@ -69,8 +69,16 @@ const adminKeyScript = function(opType, key, keyId) {
   return prova.script.nullData.output.encode(Buffer.concat(pieces));
 };
 
+const randomKey = function() {
+  return prova.ECPair.makeRandom(prova.networks.rmgTest);
+};
+
+const randomKeys = function(count) {
+  return _.range(0, count).map(() => randomKey());
+};
+
 const randomPubKey = function() {
-  return prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex');
+  return randomKey().getPublicKeyBuffer().toString('hex');
 };
 
 const getCoinbaseTx = co(function *(node, blocksAgo) {
@@ -244,7 +252,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail if incorrectly signed', co(function *() {
-      const fakeKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      const fakeKeys = randomKeys(2);
       const txBuilder = yield makeAdminTxBuilder(node, 0, fakeKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, randomPubKey()), 0);
       });
@@ -270,7 +278,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should add 5 provision keys', co(function *() {
-      const keys = _.range(0, 5).map(() => prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex'));
+      const keys = randomKeys(5).map((key) => key.getPublicKeyBuffer().toString('hex'));
       const tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         keys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key), 0);
@@ -331,7 +339,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should add 5 issue keys', co(function *() {
-      const keys = _.range(0, 5).map(() => prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex'));
+      const keys = randomKeys(5).map((key) => key.getPublicKeyBuffer().toString('hex'));
       const tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         keys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, key), 0);
@@ -419,7 +427,7 @@ describe('Functional Tests', () => {
 
     it('should add 2 provision keys (needed for rest of tests)', co(function *() {
       // Save these for later use
-      provisionKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      provisionKeys = randomKeys(2);
       const tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         provisionKeys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
@@ -585,7 +593,7 @@ describe('Functional Tests', () => {
 
     it('should add 2 issue keys (needed for rest of tests)', co(function *() {
       // Save these for later use
-      issueKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      issueKeys = randomKeys(2);
       const tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         issueKeys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
@@ -652,7 +660,7 @@ describe('Functional Tests', () => {
       const tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
         _.range(0,9).forEach(() => builder.addOutput(node.miningAddress.toScript(), issueAmount));
       });
-      supply += 9e9;
+      supply += 9 * issueAmount;
       issueTxid = yield node.sendrawtransaction(tx);
       issueVouts = _.range(1, 10);
       yield node.generate(1);
@@ -679,7 +687,7 @@ describe('Functional Tests', () => {
     it('should fail if too much destroyed (no change)', co(function *() {
       const txBuilder = yield makeAdminTxBuilder(node, Thread.Issue, [], function(builder) {
         builder.addInput(issueTxid, issueVouts[0]);
-        builder.addOutput(nullDataScript('deadbeef'), 2e9);
+        builder.addOutput(nullDataScript('deadbeef'), 2 * issueAmount);
       });
       issueKeys.forEach(function(key) {
         txBuilder.sign(0, key, adminThreadScript(Thread.Issue), 0);
@@ -770,7 +778,7 @@ describe('Functional Tests', () => {
       keys.reverse();
 
       // Set up 2 issue keys
-      issueKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      issueKeys = randomKeys(2);
       let tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         issueKeys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
@@ -780,7 +788,7 @@ describe('Functional Tests', () => {
       yield node.generate(1);
 
       // Set up 2 provision keys
-      provisionKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      provisionKeys = randomKeys(2);
       tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
         provisionKeys.forEach(function(key) {
           builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
@@ -838,22 +846,21 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail with bitcoin-style P2PKH output', co(function *() {
-      const outputScript = prova.script.pubKeyHash.output.encode(bitcoin.crypto.hash160(prova.ECPair.makeRandom().getPublicKeyBuffer()));
+      const outputScript = prova.script.pubKeyHash.output.encode(bitcoin.crypto.hash160(randomKey().getPublicKeyBuffer()));
       const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
-      builder.addOutput(script, 0.5e9);
-      builder.addOutput(outputScript, 0.5e9);
+      builder.addOutput(script, issueAmount / 2);
+      builder.addOutput(outputScript, issueAmount / 2);
       keys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: transaction is not of an allowed form');
     }));
 
     it('should fail with checkthread output', co(function *() {
-      const outputScript = prova.script.pubKeyHash.output.encode(bitcoin.crypto.hash160(prova.ECPair.makeRandom().getPublicKeyBuffer()));
       const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
       builder.addOutput(adminThreadScript(0), 0);
-      builder.addOutput(script, 0e9);
+      builder.addOutput(script, 0);
       keys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: admin transaction with invalid admin operation found');
@@ -892,7 +899,7 @@ describe('Functional Tests', () => {
       const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
       builder.addOutput(script, issueAmount);
-      const fakeKeys = [ keys[0], prova.ECPair.makeRandom(prova.networks.rmgTest) ];
+      const fakeKeys = [ keys[0], randomKey() ];
       fakeKeys.slice(1).forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.buildIncomplete().toHex();
       yield expectSendError(node, tx, 'TX rejected: failed to validate input ');
@@ -1008,7 +1015,7 @@ describe('Functional Tests', () => {
 
     xit('should be able to spend to/from an address with a new ASP key', co(function *() {
       // Add the new ASP key
-      aspKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+      aspKey = randomKey();
       let tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, aspKey.getPublicKeyBuffer().toString('hex'), nextKeyId), 0);
       });
@@ -1016,7 +1023,7 @@ describe('Functional Tests', () => {
       yield node.sendrawtransaction(tx);
 
       // Define a new address which uses a yet-to-be-added ASP key
-      const addrKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+      const addrKey = randomKey();
       const addr = new prova.Address(addrKey.getPublicKeyBuffer(), 1, nextKeyId, prova.networks.rmgTest);
 
       // Build a tx sending to it
@@ -1085,5 +1092,89 @@ describe('Functional Tests', () => {
     }));
 
   }); // end Regular Transactions
+
+  describe('Validators', () => {
+
+    let provisionKeys;
+
+    before(co(function *() {
+      // Set up 2 provision keys
+      provisionKeys = randomKeys(2);
+      tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
+        provisionKeys.forEach(function(key) {
+          builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
+        });
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+    }));
+
+    after(co(function *() {
+      // yield node.setvalidatekeys(node.validatorKeys);
+    }));
+
+    it('should not be able to create a block with an invalid validator key', co(function *() {
+      const badValidatorKey = randomKey();
+      yield node.setvalidatekeys([badValidatorKey.getPrivateKeyBuffer().toString('hex')]);
+      const blocks = (yield node.getinfo()).blocks;
+      // We don't use generate here because it just loops forever if it can't make a block
+      yield node.setgenerate(true, 1);
+      yield Promise.delay(800);
+      yield node.setgenerate(false);
+      const newBlocks = (yield node.getinfo()).blocks;
+      newBlocks.should.equal(blocks);
+    }));
+
+    it('should not be able to create a block with a revoked validator key', co(function *() {
+      yield node.setvalidatekeys(node.validateKeys);
+      const key = prova.ECPair.fromPrivateKeyBuffer(new Buffer(node.validateKeys[0], 'hex'));
+      const pubkey = key.getPublicKeyBuffer().toString('hex');
+
+      // Add a new validator key or otherwise we might hit the 2 key minimum and not be allowed to remove one
+      const addTx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ValidateKeyAdd, randomPubKey()), 0);
+      });
+      yield node.sendrawtransaction(addTx);
+      yield node.generate(1);
+
+      // Revoke the first validator key
+      const revokeTx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ValidateKeyRevoke, pubkey), 0);
+      });
+      yield node.sendrawtransaction(revokeTx);
+      yield node.generate(1);
+      expectMempoolSize(node, 0);
+
+      // Now set the validate key to just this one
+      yield node.setvalidatekeys([key.getPrivateKeyBuffer().toString('hex')]);
+
+      const blocks = (yield node.getinfo()).blocks;
+      yield node.setgenerate(true, 1);
+      yield Promise.delay(800);
+      yield node.setgenerate(false);
+      const newBlocks = (yield node.getinfo()).blocks;
+      newBlocks.should.equal(blocks);
+
+      // Set keys back, confirm we can now generate
+      yield node.setvalidatekeys(node.validateKeys.slice(1));
+      // yield node.setgenerate(true, 1);
+      // yield Promise.delay(1600);
+      // yield node.setgenerate(false);
+      yield node.generate(1);
+      const newBlocks2 = (yield node.getinfo()).blocks;
+      newBlocks2.should.equal(blocks + 1);
+
+      // const validatorKey = randomKey();
+      // yield node.setvalidatekeys([validatorKey.getPrivateKeyBuffer().toString('hex')]);
+      // const blocks = (yield node.getinfo()).blocks;
+      // // We don't use generate here because it just loops forever if it can't make a block
+      // yield node.setgenerate(true, 1);
+      // yield Promise.delay(800);
+      // yield node.setgenerate(false);
+      // const newBlocks = (yield node.getinfo()).blocks;
+      // newBlocks.should.equal(blocks);
+    }));
+
+  });
 
 });

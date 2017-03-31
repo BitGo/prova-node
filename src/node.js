@@ -159,8 +159,51 @@ ProvaTestNode.prototype.waitTillDone = co(function *(shouldCleanup) {
   }
 });
 
+class TestCluster {
+  constructor({ size, basePort }) {
+    this.basePort = basePort;
+    this.nodes = _.range(0, size).map((index) => new ProvaTestNode({ port: basePort + index }));
+  }
+
+  start() {
+    return Promise.all(_.invokeMap(this.nodes, 'start'));
+  }
+
+  stop() {
+    return Promise.all(_.invokeMap(this.nodes, 'stop'));
+  }
+
+  waitTillDone() {
+    return Promise.all(_.invokeMap(this.nodes, 'waitTillDone'));
+  }
+
+  connectAll() {
+    const promises = [];
+    nodes.forEach(function(node1, index1) {
+      nodes.forEach(function(node2, index2) {
+        if (index1 != index2) {
+          promises.push(node1.addnode(node2.host + ':' + node2.port));
+        }
+      });
+    });
+    return Promise.all(promises);
+  }
+}
+
+TestCluster.prototype.addNode = co(function *({ start }) {
+  const size = this.nodes.length;
+  const node = new ProvaTestNode({ port: basePort + size });
+  this.nodes.push(node);
+  if (start) {
+    yield node.start();
+  }
+  return node;
+});
+
+
 module.exports =
 {
   ProvaNode: ProvaNode,
-  ProvaTestNode: ProvaTestNode
+  ProvaTestNode: ProvaTestNode,
+  TestCluster: TestCluster
 };
