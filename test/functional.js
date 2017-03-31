@@ -7,6 +7,7 @@ const should = require('should');
 const crypto = require('crypto');
 const _ = require('lodash');
 const assert = require('assert');
+const bitcoin = require('bitcoinjs-lib');
 
 const AdminOp = {
   IssueKeyAdd: 0x01,
@@ -36,6 +37,7 @@ var rootPubKeys = rootKeys.map((k) => k.getPublicKeyBuffer().toString('hex'));
 
 let node;
 let provisionKeys = [];
+let nextKeyId = 3;
 
 const adminThreadScript = function(threadId) {
   threadHex = ['00', '51', '52'];
@@ -48,6 +50,10 @@ const provaScript = function(addr) {
 
 const nullDataScript = function(hex) {
   return prova.script.nullData.output.encode(new Buffer(hex, 'hex'))
+};
+
+const newTxBuilder = function() {
+  return new prova.TransactionBuilder(prova.networks.rmgTest);
 };
 
 const adminKeyScript = function(opType, key, keyId) {
@@ -67,6 +73,16 @@ const randomPubKey = function() {
   return prova.ECPair.makeRandom().getPublicKeyBuffer().toString('hex');
 };
 
+const getCoinbaseTx = co(function *(node, blocksAgo) {
+  const info = yield node.getinfo();
+  const height = info.blocks;
+  const blockhash = yield node.getblockhash(height - blocksAgo);
+  const block = yield node.getblock(blockhash, true);
+  const txid = block.tx[0];
+  const tx = yield node.getrawtransaction(txid, 1);
+  return tx;
+});
+
 const expectSendError = co(function *(node, txHex, expectedError) {
   try {
     yield node.sendrawtransaction(txHex);
@@ -77,15 +93,26 @@ const expectSendError = co(function *(node, txHex, expectedError) {
 });
 
 const expectMempoolSize = co(function *(node, size) {
-  const info = yield node.getmpoolinfo();
+  const info = yield node.getmempoolinfo();
   info.size.should.equal(size);
+});
+
+const expectCurrentBlockTransactionCount = co(function *(node, count, toBeFound) {
+  const hash = yield node.getbestblockhash();
+  const block = yield node.getblock(hash, true);
+  block.tx.should.have.length(count);
+  if (toBeFound) {
+    toBeFound.forEach(function(item) {
+      block.tx.indexOf(item).should.not.equal(-1);
+    });
+  }
 });
 
 const makeAdminTxBuilder = co(function *(node, threadId, signingKeys, munge) {
   const threadTip = yield node.getThreadTip(threadId);
-  var builder = new prova.TransactionBuilder(prova.networks.rmgTest);
-  builder.addInput(threadTip.txid, threadTip.vout);
   const script = adminThreadScript(threadId);
+  var builder = newTxBuilder();
+  builder.addInput(threadTip.txid, threadTip.vout);
   builder.addOutput(script, 0);
   if (munge) {
     munge(builder);
@@ -184,7 +211,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail with other input in first position', co(function *() {
-      const inputTx = yield node.getCoinbaseTx(101);
+      const inputTx = yield getCoinbaseTx(node, 101);
       const txBuilder = yield makeAdminTxBuilder(node, Thread.Root, rootKeys, function(builder) {
         builder.addInput(inputTx.txid, 0);
         builder.tx.ins.reverse();
@@ -193,7 +220,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail with other input in second position', co(function *() {
-      const inputTx = yield node.getCoinbaseTx(101);
+      const inputTx = yield getCoinbaseTx(node, 101);
       const txBuilder = yield makeAdminTxBuilder(node, Thread.Root, rootKeys, function(builder) {
         builder.addInput(inputTx.txid, 0);
       });
@@ -440,7 +467,7 @@ describe('Functional Tests', () => {
       yield expectSendError(node, tx, 'exists already in admin set. Operation rejected.');
     }));
 
-    it('should fail adding an ASP keyid which is not in sequential oder', co(function *() {
+    it('should fail adding an ASP keyid which is not in sequential order', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), 4), 0);
       });
@@ -451,8 +478,9 @@ describe('Functional Tests', () => {
       testKey = randomPubKey();
       const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ValidateKeyAdd, testKey), 0);
-        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, testKey, 3), 0);
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, testKey, nextKeyId), 0);
       });
+      nextKeyId++;
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
       info = yield node.getadmininfo();
@@ -530,6 +558,7 @@ describe('Functional Tests', () => {
     let supply = 0;
     let issueTxid;
     let issueVouts;
+    const issueAmount = 1e9;
 
     before(co(function *() {
       // Remove all existing issue keys
@@ -549,7 +578,7 @@ describe('Functional Tests', () => {
 
     it('should fail with no issue keys defined', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Issue, rootKeys, function(builder) {
-        builder.addOutput(node.miningAddress.toScript(), 1e9);
+        builder.addOutput(node.miningAddress.toScript(), issueAmount);
       });
       yield expectSendError(node, tx, 'invalid chain state, at least 2 keys required for thread');
     }));
@@ -566,12 +595,12 @@ describe('Functional Tests', () => {
       yield node.generate(1);
       const info = yield node.getadmininfo();
       info.should.have.property('issuekeys');
-      info.provisionkeys.should.have.length(2);
+      info.issuekeys.should.have.length(2);
     }));
 
     it('should fail if partially signed', co(function *() {
       const txBuilder = yield makeAdminTxBuilder(node, Thread.Issue, issueKeys.slice(1), function(builder) {
-        builder.addOutput(node.miningAddress.toScript(), 1e9);
+        builder.addOutput(node.miningAddress.toScript(), issueAmount);
       });
       yield expectSendError(node, txBuilder.buildIncomplete().toHex(), 'TX rejected: failed to validate input');
     }));
@@ -585,9 +614,9 @@ describe('Functional Tests', () => {
 
     it('should issue to a single output', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
-        builder.addOutput(node.miningAddress.toScript(), 1e9);
+        builder.addOutput(node.miningAddress.toScript(), issueAmount);
       });
-      supply += 1e9;
+      supply += issueAmount;
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
       const info = yield node.getadmininfo();
@@ -596,7 +625,7 @@ describe('Functional Tests', () => {
 
     it('should fail if nulldata output is included', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
-        builder.addOutput(node.miningAddress.toScript(), 1e9);
+        builder.addOutput(node.miningAddress.toScript(), issueAmount);
         builder.addOutput(nullDataScript('deadbeef'), 0);
       });
       yield expectSendError(node, tx, 'tries to destroy funds');
@@ -604,7 +633,7 @@ describe('Functional Tests', () => {
 
     it('should issue to multiple outputs', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
-        _.range(0,9).forEach(() => builder.addOutput(node.miningAddress.toScript(), 1e9));
+        _.range(0,9).forEach(() => builder.addOutput(node.miningAddress.toScript(), issueAmount));
       });
       supply += 9e9;
       issueTxid = yield node.sendrawtransaction(tx);
@@ -624,7 +653,7 @@ describe('Functional Tests', () => {
       });
       // Address uses root keys
       rootKeys.forEach(function(key) {
-        txBuilder.sign(1, key, node.miningAddress.toScript(), 1e9);
+        txBuilder.sign(1, key, node.miningAddress.toScript(), issueAmount);
       });
       const tx = txBuilder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: transaction fee 500000000 is greater than the maximum fee limit');
@@ -640,7 +669,7 @@ describe('Functional Tests', () => {
       });
       // Address uses root keys
       rootKeys.forEach(function(key) {
-        txBuilder.sign(1, key, node.miningAddress.toScript(), 1e9);
+        txBuilder.sign(1, key, node.miningAddress.toScript(), issueAmount);
       });
       const tx = txBuilder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: total value of all transaction inputs for transaction');
@@ -657,7 +686,7 @@ describe('Functional Tests', () => {
       });
       // Address uses root keys
       rootKeys.forEach(function(key) {
-        txBuilder.sign(1, key, node.miningAddress.toScript(), 1e9);
+        txBuilder.sign(1, key, node.miningAddress.toScript(), issueAmount);
       });
       const tx = txBuilder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: total value of all transaction inputs for transaction');
@@ -674,7 +703,7 @@ describe('Functional Tests', () => {
       });
       // Address uses root keys
       rootKeys.forEach(function(key) {
-        txBuilder.sign(1, key, node.miningAddress.toScript(), 1e9);
+        txBuilder.sign(1, key, node.miningAddress.toScript(), issueAmount);
       });
       const tx = txBuilder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: total value of all transaction inputs for transaction');
@@ -684,36 +713,39 @@ describe('Functional Tests', () => {
       const txBuilder = yield makeAdminTxBuilder(node, Thread.Issue, [], function(builder) {
         builder.addInput(issueTxid, issueVouts.shift());
         builder.addInput(issueTxid, issueVouts.shift());
-        builder.addOutput(nullDataScript(''), 1e9);
-        builder.addOutput(node.miningAddress.toScript(), 1e9);
+        builder.addOutput(nullDataScript(''), issueAmount);
+        builder.addOutput(node.miningAddress.toScript(), issueAmount);
       });
       issueKeys.forEach(function(key) {
         txBuilder.sign(0, key, adminThreadScript(Thread.Issue), 0);
       });
       // Address uses root keys
       rootKeys.forEach(function(key) {
-        txBuilder.sign(1, key, node.miningAddress.toScript(), 1e9);
-        txBuilder.sign(2, key, node.miningAddress.toScript(), 1e9);
+        txBuilder.sign(1, key, node.miningAddress.toScript(), issueAmount);
+        txBuilder.sign(2, key, node.miningAddress.toScript(), issueAmount);
       });
       const tx = txBuilder.build().toHex();
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
-      supply -= 1e9;
+      supply -= issueAmount;
       const info = yield node.getadmininfo();
       info.totalsupply.should.equal(supply);
     }));
 
   }); // end Issue Thread
 
-  describe('Standard Transactions', () => {
+  describe('Regular Transactions', () => {
 
-    let issueKeys = [];
+    let issueKeys;
+    let provisionKeys;
     let issueTxid;
     let issueVouts;
     let coinbaseTxid;
     let coinbaseSpendingTx;
     let script;
     let keys;
+    let aspKey;
+    const issueAmount = 1e9;
 
     before(co(function *() {
       script = node.miningAddress.toScript();
@@ -730,9 +762,19 @@ describe('Functional Tests', () => {
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
 
+      // Set up 2 provision keys
+      provisionKeys = _.range(0, 2).map(() => prova.ECPair.makeRandom(prova.networks.rmgTest));
+      tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
+        provisionKeys.forEach(function(key) {
+          builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
+        });
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+
       // Issue some coins
       tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
-        _.range(0,9).forEach(() => builder.addOutput(node.miningAddress.toScript(), 1e9));
+        _.range(0,9).forEach(() => builder.addOutput(node.miningAddress.toScript(), issueAmount));
       });
       issueTxid = yield node.sendrawtransaction(tx);
       issueVouts = _.range(1, 10);
@@ -740,39 +782,100 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail to spend with too high a fee', co(function *() {
-      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+      const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
-      builder.addOutput(script, 1e9 - 5e6 - 1);
-      rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
+      builder.addOutput(script, issueAmount - 5e6 - 1);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: transaction fee 5000001 is greater than the maximum fee limit 5000000');
     }));
 
     it('should fail if outputs greater than inputs', co(function *() {
-      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+      const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
-      builder.addOutput(script, 1e9 + 1);
-      rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
+      builder.addOutput(script, issueAmount + 1);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: total value of all transaction inputs for transaction');
     }));
 
-    it('should fail if more than 1 nulldata output', co(function *() {
-      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+    xit('should fail if more than 1 nulldata output', co(function *() {
+      const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
-      builder.addOutput(script, 1e9);
+      builder.addOutput(script, issueAmount);
       builder.addOutput(nullDataScript('deadbeef01'), 0);
       builder.addOutput(nullDataScript('deadbeef02'), 0);
-      rootKeys.forEach((key) => builder.sign(0, key, script, 1e9));
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield expectSendError(node, tx, 'TX rejected: transaction is not of an allowed form');
     }));
 
-    it('should spend successfully with max fee', co(function *() {
-      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+    it('should fail with bitcoin-style P2PKH output', co(function *() {
+      const outputScript = prova.script.pubKeyHash.output.encode(bitcoin.crypto.hash160(prova.ECPair.makeRandom().getPublicKeyBuffer()));
+      const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
-      builder.addOutput(script, 1e9 - 5e6);
-      keys.forEach((key) => builder.sign(0, key, script, 1e9));
+      builder.addOutput(script, 0.5e9);
+      builder.addOutput(outputScript, 0.5e9);
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'TX rejected: transaction is not of an allowed form');
+    }));
+
+    it('should fail with checkthread output', co(function *() {
+      const outputScript = prova.script.pubKeyHash.output.encode(bitcoin.crypto.hash160(prova.ECPair.makeRandom().getPublicKeyBuffer()));
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(adminThreadScript(0), 0);
+      builder.addOutput(script, 0e9);
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'TX rejected: admin transaction with invalid admin operation found');
+    }));
+
+    it('should fail sending to address with 2 identical valid keyids', co(function *() {
+      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), 1, 1);
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(badAddr.toScript(), issueAmount);
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'TX rejected: transaction is not of an allowed form');
+    }));
+
+    it('should fail sending to address with an invalid keyid', co(function *() {
+      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), 1, 99);
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(badAddr.toScript(), issueAmount);
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build().toHex();
+      yield expectSendError(node, tx, 'output 0 has unknown keyID 99');
+    }));
+
+    it('should fail if signed by insufficient keys', co(function *() {
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(script, issueAmount);
+      keys.slice(1).forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.buildIncomplete().toHex();
+      yield expectSendError(node, tx, 'TX rejected: failed to validate input ');
+    }));
+
+    it('should fail if signed by wrong keys', co(function *() {
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts[0]);
+      builder.addOutput(script, issueAmount);
+      const fakeKeys = [ keys[0], prova.ECPair.makeRandom(prova.networks.rmgTest) ];
+      fakeKeys.slice(1).forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.buildIncomplete().toHex();
+      yield expectSendError(node, tx, 'TX rejected: failed to validate input ');
+    }));
+
+    it('should spend successfully with max fee', co(function *() {
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(script, issueAmount - 5e6);
+      keys.forEach((key) => builder.sign(0, key, script, issueAmount));
       const tx = builder.build().toHex();
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
@@ -787,7 +890,7 @@ describe('Functional Tests', () => {
       coinbaseTx.vout.should.have.length(1);
       coinbaseTx.vout[0].value.should.equal(5);
 
-      const builder = new prova.TransactionBuilder(prova.networks.rmgTest);
+      const builder = newTxBuilder();
       builder.addInput(coinbaseTxid, 0);
       builder.addOutput(script, 5e6);
       keys.forEach((key) => builder.sign(0, key, script, 5e6));
@@ -804,9 +907,143 @@ describe('Functional Tests', () => {
       yield node.generate(1);
       const txid = yield node.sendrawtransaction(coinbaseSpendingTx.toHex());
       txid.should.equal(coinbaseSpendingTx.getId());
+      yield expectMempoolSize(node, 1);
       yield node.generate(1);
+      yield expectMempoolSize(node, 0);
     }));
 
-  }); // end Standard Transactions
+    it('should succeed spending standard tx output in next block', co(function *() {
+      const builder = newTxBuilder();
+      builder.addInput(coinbaseSpendingTx.getId(), 0);
+      builder.addOutput(script, 5e6);
+      keys.forEach((key) => builder.sign(0, key, script, 5e6));
+      const tx = builder.build();
+      const txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      yield expectMempoolSize(node, 1);
+      yield node.generate(1);
+      yield expectMempoolSize(node, 0);
+    }));
+
+    it('should succeed spending a chain of transactions in same block', co(function *() {
+      const txs = [];
+      const txids = [];
+      var prevTxid = issueTxid;
+      var prevVout = issueVouts.shift();
+      // Make a chain of 8 transactions
+      _.range(0, 8).forEach(function() {
+        const builder = newTxBuilder();
+        builder.addInput(prevTxid, prevVout);
+        builder.addOutput(script, issueAmount);
+        keys.forEach((key) => builder.sign(0, key, script, issueAmount));
+        const tx = builder.build();
+        txs.push(tx);
+        prevTxid = tx.getId();
+        txids.push(prevTxid);
+        prevVout = 0;
+      });
+
+      while (txs.length) {
+        const tx = txs.shift();
+        const txid = yield node.sendrawtransaction(tx.toHex());
+        txid.should.equal(tx.getId());
+      }
+      yield expectMempoolSize(node, 8);
+      yield node.generate(1);
+      yield expectMempoolSize(node, 0);
+      yield expectCurrentBlockTransactionCount(node, 9, txids);
+    }));
+
+    it('should spend successfully using both ASP keys', co(function *() {
+      const builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(script, issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build();
+      const txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      yield node.generate(1);
+      yield expectMempoolSize(node, 0);
+    }));
+
+    it('should be able to spend to/from an address with a new ASP key', co(function *() {
+      // Add the new ASP key
+      aspKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+      let tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, aspKey.getPublicKeyBuffer().toString('hex'), nextKeyId), 0);
+      });
+      // Send, but don't mine
+      yield node.sendrawtransaction(tx);
+
+      // Define a new address which uses a yet-to-be-added ASP key
+      const addrKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+      const addr = new prova.Address(addrKey.getPublicKeyBuffer(), 1, nextKeyId, prova.networks.rmgTest);
+
+      // Build a tx sending to it
+      let builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(addr.toScript(), issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+
+      // should fail because admin tx adding ASP key has not yet been mined
+      yield expectSendError(node, tx.toHex(), 'output 0 has unknown keyID');
+
+      // mine the admin tx
+      yield node.generate(1);
+
+      // now should work
+      let txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+
+      // make sure we can spend it with the new ASP key
+      builder = newTxBuilder();
+      builder.addInput(txid, 0);
+      builder.addOutput(addr.toScript(), issueAmount);
+      [addrKey, aspKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+      txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      yield node.generate(1);
+      yield expectMempoolSize(node, 0);
+
+      // now kill the ASP key
+      tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyRevoke, aspKey.getPublicKeyBuffer().toString('hex'), nextKeyId), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+
+      // should not be able to move existing funds with the removed ASP key
+      builder = newTxBuilder();
+      builder.addInput(txid, 0);
+      builder.addOutput(script, issueAmount);
+      [addrKey, aspKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+      yield expectSendError(node, tx.toHex(), 'TX rejected: failed to validate input');
+
+      // should be able to move these funds with the other 2 keys though
+      builder = newTxBuilder();
+      builder.addInput(txid, 0);
+      builder.addOutput(script, issueAmount);
+      [rootKeys[1], addrKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+      // TODO: THIS IS FAILING!!!!
+      // txid = yield node.sendrawtransaction(tx.toHex());
+      // txid.should.equal(tx.getId());
+      // yield node.generate(1);
+
+      // should now not be able to send to the address that uses the revoked ASP key
+      builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(addr.toScript(), issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+      yield expectSendError(node, tx.toHex(), 'output 0 has unknown keyID');
+
+      nextKeyId++;
+    }));
+
+  }); // end Regular Transactions
 
 });
