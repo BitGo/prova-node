@@ -8,6 +8,7 @@ const cuid = require('cuid');
 const fs = require('fs');
 const util = require('util');
 const prova = require('prova');
+const _ = require('lodash');
 
 class ProvaNode {
 
@@ -106,16 +107,17 @@ class ProvaTestNode extends ProvaNode {
       'a959753ab5aeb59d7184ba37f6b219492bcb137bb992418590a40fd4ef9facdd',
       'c345ff4a207ed945ac3040a933f386676e9c034f261ad4306f8b34d828eecde6'
     ];
-    this.datadir = '/tmp/prova-' + cuid();
+    this.datadir = `/tmp/prova-${this.port}-${cuid()}`;
   }
 
 }
 
-ProvaTestNode.prototype.start = co(function *() {
+ProvaTestNode.prototype.start = co(function *(debugLevel) {
   fs.mkdirSync(this.datadir);
   const args = [
     '--regtest',
     '--txindex',
+    '--banduration=1s',
     util.format('--miningaddr=%s', this.miningAddress.toString()),
     util.format('--listen=%s:%s', this.host, this.port),
     util.format('--rpcuser=%s', this.username),
@@ -123,19 +125,28 @@ ProvaTestNode.prototype.start = co(function *() {
     util.format('--rpclisten=%s:%s', this.host, this.rpcport),
     util.format('--datadir=%s', this.datadir)
   ];
+  if (debugLevel) {
+    args.push('-d=' + debugLevel);
+  }
   this.proc = spawn('prova', args);
 
   this.proc.stderr.on('data', (data) => {
-    // console.log(`stderr: ${data}`);
+    if (debugLevel) {
+      console.log(`stderr: ${data}`);
+    }
   });
 
   this.proc.stdout.on('data', (data) => {
-    // console.log(`stdout: ${data}`);
+    if (debugLevel) {
+      console.log(`stdout[${this.port}]: ${data}`);
+    }
   });
 
   this.proc.on('close', (code) => {
     this.done = true;
-    // console.log(`child prova process on port ${this.port} exited with code ${code}`);
+    if (debugLevel) {
+      console.log(`child prova process on port ${this.port} exited with code ${code}`);
+    }
   });
 
   // Wait for RPC server to start
@@ -159,30 +170,106 @@ ProvaTestNode.prototype.waitTillDone = co(function *(shouldCleanup) {
   }
 });
 
-class TestCluster {
+class BTCDTestNode extends ProvaNode {
+
+  constructor({ port }) {
+    super({
+      host: '127.0.0.1',
+      rpcport: port + 10000,
+      username: 'test',
+      password: 'test'
+    });
+    this.port = port;
+
+    this.addressKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
+    this.miningAddress = 'n2SjFgAhHAv8PcTuq5x2e9sugcXDpMTzX7';
+    this.datadir = `/tmp/btcd-${this.port}-${cuid()}`;
+  }
+
+}
+
+BTCDTestNode.prototype.start = co(function *(debugLevel) {
+  fs.mkdirSync(this.datadir);
+  const args = [
+    '--regtest',
+    '--txindex',
+    util.format('--miningaddr=%s', this.miningAddress.toString()),
+    util.format('--listen=%s:%s', this.host, this.port),
+    util.format('--rpcuser=%s', this.username),
+    util.format('--rpcpass=%s', this.password),
+    util.format('--rpclisten=%s:%s', this.host, this.rpcport),
+    util.format('--datadir=%s', this.datadir)
+  ];
+  if (debugLevel) {
+    args.push('-d=' + debugLevel);
+  }
+  this.proc = spawn('btcd', args);
+
+  this.proc.stderr.on('data', (data) => {
+    if (debugLevel) {
+      console.log(`stderr: ${data}`);
+    }
+  });
+
+  this.proc.stdout.on('data', (data) => {
+    if (debugLevel) {
+      console.log(`stdout[${this.port}]: ${data}`);
+    }
+  });
+
+  this.proc.on('close', (code) => {
+    this.done = true;
+    if (debugLevel) {
+      console.log(`child btcd process on port ${this.port} exited with code ${code}`);
+    }
+  });
+
+  // Wait for RPC server to start
+  while (true) {
+    yield Promise.delay(100);
+    try {
+      yield this.getinfo();
+      break;
+    } catch (e) {
+    }
+  }
+});
+
+BTCDTestNode.prototype.waitTillDone = co(function *(shouldCleanup) {
+  while (!this.done) {
+    yield Promise.delay(100);
+  }
+  if (shouldCleanup) {
+    yield execAsync('rm -rf ' + this.datadir);
+  }
+});
+
+class ProvaTestCluster {
   constructor({ size, basePort }) {
     this.basePort = basePort;
     this.nodes = _.range(0, size).map((index) => new ProvaTestNode({ port: basePort + index }));
   }
 
-  start() {
-    return Promise.all(_.invokeMap(this.nodes, 'start'));
+  start(debugLevel) {
+    const args = debugLevel ? [debugLevel] : undefined;
+    return Promise.all(_.invokeMap(this.nodes, 'start', args));
   }
 
   stop() {
     return Promise.all(_.invokeMap(this.nodes, 'stop'));
   }
 
-  waitTillDone() {
-    return Promise.all(_.invokeMap(this.nodes, 'waitTillDone'));
+  waitTillDone(shouldCleanup) {
+    return Promise.all(_.invokeMap(this.nodes, 'waitTillDone', [shouldCleanup]));
   }
 
   connectAll() {
     const promises = [];
+    const nodes = this.nodes;
     nodes.forEach(function(node1, index1) {
       nodes.forEach(function(node2, index2) {
         if (index1 != index2) {
-          promises.push(node1.addnode(node2.host + ':' + node2.port));
+          promises.push(node1.addnode(node2.host + ':' + node2.port, 'add'));
         }
       });
     });
@@ -190,7 +277,50 @@ class TestCluster {
   }
 }
 
-TestCluster.prototype.addNode = co(function *({ start }) {
+ProvaTestCluster.prototype.addNode = co(function *({ start }) {
+  const size = this.nodes.length;
+  const node = new ProvaTestNode({ port: basePort + size });
+  this.nodes.push(node);
+  if (start) {
+    yield node.start();
+  }
+  return node;
+});
+
+class BTCDTestCluster {
+  constructor({ size, basePort }) {
+    this.basePort = basePort;
+    this.nodes = _.range(0, size).map((index) => new BTCDTestNode({ port: basePort + index }));
+  }
+
+  start(debugLevel) {
+    const args = debugLevel ? [debugLevel] : undefined;
+    return Promise.all(_.invokeMap(this.nodes, 'start', args));
+  }
+
+  stop() {
+    return Promise.all(_.invokeMap(this.nodes, 'stop'));
+  }
+
+  waitTillDone(shouldCleanup) {
+    return Promise.all(_.invokeMap(this.nodes, 'waitTillDone', [shouldCleanup]));
+  }
+
+  connectAll() {
+    const promises = [];
+    const nodes = this.nodes;
+    nodes.forEach(function(node1, index1) {
+      nodes.forEach(function(node2, index2) {
+        if (index1 != index2) {
+          promises.push(node1.addnode(node2.host + ':' + node2.port, 'add'));
+        }
+      });
+    });
+    return Promise.all(promises);
+  }
+}
+
+BTCDTestCluster.prototype.addNode = co(function *({ start }) {
   const size = this.nodes.length;
   const node = new ProvaTestNode({ port: basePort + size });
   this.nodes.push(node);
@@ -205,5 +335,7 @@ module.exports =
 {
   ProvaNode: ProvaNode,
   ProvaTestNode: ProvaTestNode,
-  TestCluster: TestCluster
+  BTCDTestNode: BTCDTestNode,
+  ProvaTestCluster: ProvaTestCluster,
+  BTCDTestCluster: BTCDTestCluster
 };

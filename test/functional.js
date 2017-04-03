@@ -1,4 +1,6 @@
 const ProvaTestNode = require('../src/node').ProvaTestNode;
+const BTCDTestCluster = require('../src/node').BTCDTestCluster;
+const ProvaTestCluster = require('../src/node').ProvaTestCluster;
 const Promise = require('bluebird');
 const co = Promise.coroutine;
 const prova = require('prova');
@@ -506,7 +508,9 @@ describe('Functional Tests', () => {
       info.validatekeys.should.not.containEql(testKey);
     }));
 
-    // Note, this is kind of broken -- we are just removing keyid using a random key!
+    // TODO: this is broken -- we are just removing keyid using a random key!
+    // What would happen if this tx were reversed due to a reorg? This new random key
+    // would get added back, attached to the keyid!
     it('should remove keyid', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyRevoke, randomPubKey(), nextKeyId-1), 0);
@@ -531,10 +535,17 @@ describe('Functional Tests', () => {
       yield expectSendError(node, tx, 'rejected. should be ' + nextKeyId);
     }));
 
-    // TODO: fix bug causing test to fail
-    xit('should fail adding keyid twice in same tx', co(function *() {
+    it('should fail adding keyid twice in same tx', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId), 0);
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId), 0);
+      });
+      yield expectSendError(node, tx, 'rejected');
+    }));
+
+    it('should fail adding 2 keys with keyids out of order', co(function *() {
+      const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId+1), 0);
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId), 0);
       });
       yield expectSendError(node, tx, 'rejected');
@@ -556,6 +567,27 @@ describe('Functional Tests', () => {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, key, nextKeyId), 0);
       });
       yield expectSendError(node, tx, 'can not be revoked in transaction');
+    }));
+
+    it('should succeed adding same key twice as different keyid', co(function *() {
+      const key = randomPubKey();
+      const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, key, nextKeyId), 0);
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, key, nextKeyId+1), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+      nextKeyId += 2;
+    }));
+
+    it('should succeed adding 2 keys with keyids in correct order', co(function *() {
+      const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId), 0);
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, randomPubKey(), nextKeyId+1), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+      nextKeyId += 2;
     }));
 
   }); // end Provision Thread
@@ -1176,5 +1208,79 @@ describe('Functional Tests', () => {
     }));
 
   });
+
+});
+
+
+// Network test helper functions
+//
+const expectNetworkConvergenceToHash = co(function *(nodes, expectedHash, limitMilliseconds) {
+  const start = new Date();
+  while (nodes.length) {
+    const node = nodes.shift();
+    const hash = yield node.getbestblockhash();
+    if (hash !== expectedHash) {
+      nodes.push(node);
+      yield Promise.delay(100);
+    }
+    if (limitMilliseconds && (new Date() - start) > limitMilliseconds) {
+      return false;
+    }
+  }
+  return true;
+});
+
+const expectNetworkConvergence = co(function *(nodes, limitMilliseconds) {
+  const start = new Date();
+  while (true) {
+    const hashes = yield Promise.map(nodes, (node) => node.getbestblockhash());
+    const heights = _.map((yield Promise.map(nodes, (node) => node.getinfo())), 'blocks');
+    const diffValues = _.uniq(hashes).length;
+    console.log('Waiting for convergence: ' + diffValues + ' ' + JSON.stringify(heights));
+    if (diffValues == 1) {
+      return true;
+    }
+    yield Promise.delay(250);
+    if (limitMilliseconds && (new Date() - start) > limitMilliseconds) {
+      return false;
+    }
+  }
+});
+
+xdescribe('Network Tests', () => {
+
+  let cluster;
+
+  before(co(function *() {
+    cluster = new BTCDTestCluster({ size: 8, basePort: 4000 });
+    yield cluster.start(null);
+    yield cluster.connectAll();
+  }));
+
+  after(co(function *() {
+    yield cluster.stop();
+    yield cluster.waitTillDone(true);
+  }));
+
+  it('blocks generated on 1 node are seen on all other nodes', co(function *() {
+    const node = cluster.nodes[0];
+    yield node.generate(1);
+    const hash = yield node.getbestblockhash();
+    const result = yield expectNetworkConvergenceToHash(cluster.nodes.slice(1), hash, 30000);
+    result.should.be.true();
+  }));
+
+  it('network should converge if 2 nodes each generate separate blockchains', co(function *() {
+    const genNodes = cluster.nodes.slice(0, 4);
+    // const evenNodes = cluster.nodes.filter((node, idx) => idx % 2 === 0).slice(0, 2);
+    yield Promise.map(genNodes, (node, idx) => node.generate(10 * (1+idx)));
+    const result = yield expectNetworkConvergence(cluster.nodes, 300000);
+    result.should.be.true();
+  }));
+
+  // tx propagation
+  // tx to ASP key that has just been created
+  // forks (longest wins)
+  //
 
 });
