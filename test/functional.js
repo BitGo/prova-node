@@ -508,17 +508,22 @@ describe('Functional Tests', () => {
       info.validatekeys.should.not.containEql(testKey);
     }));
 
-    // TODO: this is broken -- we are just removing keyid using a random key!
-    // What would happen if this tx were reversed due to a reorg? This new random key
-    // would get added back, attached to the keyid!
-    it('should remove keyid', co(function *() {
+    it('should fail to remove keyid if key does not match', co(function *() {
       const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
         builder.addOutput(adminKeyScript(AdminOp.ASPKeyRevoke, randomPubKey(), nextKeyId-1), 0);
+      });
+      yield expectSendError(node, tx, 'can not be revoked in transaction');
+    }));
+
+    it('should remove keyid if key does match', co(function *() {
+      const aspKey = _((yield node.getadmininfo()).aspkeys).filter({ keyid: nextKeyId-1 }).value()[0];
+      const tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyRevoke, aspKey.pubkey, nextKeyId-1), 0);
       });
       yield node.sendrawtransaction(tx);
       yield node.generate(1);
       info = yield node.getadmininfo();
-      _(info.aspkeys).map('pubkey').value().should.not.containEql(testKey);
+      _(info.aspkeys).map('pubkey').value().should.not.containEql(aspKey.pubkey);
     }));
 
     it('should fail adding keyid for a second time (new key)', co(function *() {
@@ -1045,7 +1050,7 @@ describe('Functional Tests', () => {
       yield expectMempoolSize(node, 0);
     }));
 
-    xit('should be able to spend to/from an address with a new ASP key', co(function *() {
+    it('should be able to spend to/from an address with a new ASP key', co(function *() {
       // Add the new ASP key
       aspKey = randomKey();
       let tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
@@ -1105,9 +1110,8 @@ describe('Functional Tests', () => {
       builder = newTxBuilder();
       builder.addInput(txid, 0);
       builder.addOutput(script, issueAmount);
-      [rootKeys[1], addrKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      [rootKeys[0], addrKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
       tx = builder.build();
-      // TODO: THIS IS FAILING
       txid = yield node.sendrawtransaction(tx.toHex());
       txid.should.equal(tx.getId());
       yield node.generate(1);
@@ -1142,10 +1146,12 @@ describe('Functional Tests', () => {
     }));
 
     after(co(function *() {
-      // yield node.setvalidatekeys(node.validatorKeys);
+      yield node.setvalidatekeys(node.validateKeys);
     }));
 
-    it('should not be able to create a block with an invalid validator key', co(function *() {
+    // TODO: the behavior of setgenerate has changed -- blocks will not get generated without another
+    // node attached. these need to be moved to the network test section, or, always fire up 2 nodes
+    xit('should not be able to create a block with an invalid validator key', co(function *() {
       const badValidatorKey = randomKey();
       yield node.setvalidatekeys([badValidatorKey.getPrivateKeyBuffer().toString('hex')]);
       const blocks = (yield node.getinfo()).blocks;
@@ -1157,7 +1163,7 @@ describe('Functional Tests', () => {
       newBlocks.should.equal(blocks);
     }));
 
-    it('should not be able to create a block with a revoked validator key', co(function *() {
+    xit('should not be able to create a block with a revoked validator key', co(function *() {
       yield node.setvalidatekeys(node.validateKeys);
       const key = prova.ECPair.fromPrivateKeyBuffer(new Buffer(node.validateKeys[0], 'hex'));
       const pubkey = key.getPublicKeyBuffer().toString('hex');
