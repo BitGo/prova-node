@@ -4,7 +4,6 @@ const ProvaTestCluster = require('../src/node').ProvaTestCluster;
 const Promise = require('bluebird');
 const co = Promise.coroutine;
 const prova = require('prova');
-const provaAdmin = require('prova-admin');
 const should = require('should');
 const crypto = require('crypto');
 const _ = require('lodash');
@@ -35,7 +34,7 @@ var rootKeys = [
   "2b8c52b77b327c755b9b375500d3f4b2da9b0a1ff65f6891d311fe94295bc26a"
 ].map((hex) => prova.ECPair.fromPrivateKeyBuffer(new Buffer(hex, 'hex'), prova.networks.rmgTest));
 
-var rootPubKeys = rootKeys.map((k) => k.getPublicKeyBuffer().toString('hex'));
+const rootPubKeys = rootKeys.map((k) => k.getPublicKeyBuffer().toString('hex'));
 
 let node;
 let provisionKeys = [];
@@ -143,14 +142,16 @@ const makeAdminTx = co(function *(node, threadId, signingKeys, munge) {
 describe('Functional Tests', () => {
 
   before(co(function *() {
-    node = new ProvaTestNode({ port: 5555 });
-    yield node.start();
+    cluster = new ProvaTestCluster({ size: 2, basePort: 5000});
+    yield cluster.start();
+    yield cluster.connectAll();
+    node = cluster.nodes[0];
     yield node.generate(105);
   }));
 
   after(co(function *() {
-    yield node.stop();
-    yield node.waitTillDone(true);
+    yield cluster.stop();
+    yield cluster.waitTillDone(true);
   }));
 
   describe('Root Thread', () => {
@@ -1151,7 +1152,7 @@ describe('Functional Tests', () => {
 
     // TODO: the behavior of setgenerate has changed -- blocks will not get generated without another
     // node attached. these need to be moved to the network test section, or, always fire up 2 nodes
-    xit('should not be able to create a block with an invalid validator key', co(function *() {
+    it('should not be able to create a block with an invalid validator key', co(function *() {
       const badValidatorKey = randomKey();
       yield node.setvalidatekeys([badValidatorKey.getPrivateKeyBuffer().toString('hex')]);
       const blocks = (yield node.getinfo()).blocks;
@@ -1163,7 +1164,7 @@ describe('Functional Tests', () => {
       newBlocks.should.equal(blocks);
     }));
 
-    xit('should not be able to create a block with a revoked validator key', co(function *() {
+    it('should not be able to create a block with a revoked validator key', co(function *() {
       yield node.setvalidatekeys(node.validateKeys);
       const key = prova.ECPair.fromPrivateKeyBuffer(new Buffer(node.validateKeys[0], 'hex'));
       const pubkey = key.getPublicKeyBuffer().toString('hex');
@@ -1186,7 +1187,7 @@ describe('Functional Tests', () => {
       // Now set the validate key to just this one
       yield node.setvalidatekeys([key.getPrivateKeyBuffer().toString('hex')]);
 
-      const blocks = (yield node.getinfo()).blocks;
+      let blocks = (yield node.getinfo()).blocks;
       yield node.setgenerate(true, 1);
       yield Promise.delay(800);
       yield node.setgenerate(false);
@@ -1201,16 +1202,6 @@ describe('Functional Tests', () => {
       yield node.generate(1);
       const newBlocks2 = (yield node.getinfo()).blocks;
       newBlocks2.should.equal(blocks + 1);
-
-      // const validatorKey = randomKey();
-      // yield node.setvalidatekeys([validatorKey.getPrivateKeyBuffer().toString('hex')]);
-      // const blocks = (yield node.getinfo()).blocks;
-      // // We don't use generate here because it just loops forever if it can't make a block
-      // yield node.setgenerate(true, 1);
-      // yield Promise.delay(800);
-      // yield node.setgenerate(false);
-      // const newBlocks = (yield node.getinfo()).blocks;
-      // newBlocks.should.equal(blocks);
     }));
 
   });
@@ -1242,7 +1233,7 @@ const expectNetworkConvergence = co(function *(nodes, limitMilliseconds) {
     const hashes = yield Promise.map(nodes, (node) => node.getbestblockhash());
     const heights = _.map((yield Promise.map(nodes, (node) => node.getinfo())), 'blocks');
     const diffValues = _.uniq(hashes).length;
-    console.log('Waiting for convergence: ' + diffValues + ' ' + JSON.stringify(heights));
+    // console.log('Waiting for convergence: ' + diffValues + ' ' + JSON.stringify(heights));
     if (diffValues == 1) {
       return true;
     }
@@ -1253,12 +1244,12 @@ const expectNetworkConvergence = co(function *(nodes, limitMilliseconds) {
   }
 });
 
-xdescribe('Network Tests', () => {
+describe('Network Tests', () => {
 
   let cluster;
 
   before(co(function *() {
-    cluster = new BTCDTestCluster({ size: 8, basePort: 4000 });
+    cluster = new ProvaTestCluster({ size: 8, basePort: 4000 });
     yield cluster.start(null);
     yield cluster.connectAll();
   }));
