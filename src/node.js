@@ -17,6 +17,7 @@ class ProvaNode {
     this.rpcport = rpcport;
     this.username = username;
     this.password = password;
+    this.addedNodes = {};
     this.client = rpc.Client.$create(rpcport, host, username, password);
   }
 
@@ -87,6 +88,21 @@ ProvaNode.prototype.getThreadTip = co(function *(threadId) {
   };
 });
 
+ProvaNode.prototype.addNode = function(hostAndPort) {
+  this.addedNodes[hostAndPort] = true;
+  return this.addnode(hostAndPort, 'add');
+};
+
+ProvaNode.prototype.reconnect = function() {
+  return Promise.map(_.keys(this.addedNodes), (addr) => this.addnode(addr, 'add'));
+};
+
+ProvaNode.prototype.removeAllNodes = function() {
+  nodes = _.keys(this.addedNodes);
+  this.addedNodes = {};
+  return Promise.map(_.keys(this.addedNodes), (addr) => this.addnode(addr, 'remove'));
+};
+
 class ProvaTestNode extends ProvaNode {
 
   constructor({ port }) {
@@ -113,11 +129,13 @@ class ProvaTestNode extends ProvaNode {
 }
 
 ProvaTestNode.prototype.start = co(function *(debugLevel) {
-  fs.mkdirSync(this.datadir);
+  try {
+    fs.mkdirSync(this.datadir);
+  } catch (e) {}
   const args = [
     '--regtest',
     '--txindex',
-    '--banduration=1s',
+    '--maxorphantx=100',
     util.format('--miningaddr=%s', this.miningAddress.toString()),
     util.format('--listen=%s:%s', this.host, this.port),
     util.format('--rpcuser=%s', this.username),
@@ -269,11 +287,15 @@ class ProvaTestCluster {
     nodes.forEach(function(node1, index1) {
       nodes.forEach(function(node2, index2) {
         if (index1 != index2) {
-          promises.push(node1.addnode(node2.host + ':' + node2.port, 'add'));
+          promises.push(node1.addNode(node2.host + ':' + node2.port, 'add'));
         }
       });
     });
     return Promise.all(promises);
+  }
+
+  disconnectAll() {
+    return Promise.map(this.nodes, (node) => node.removeAllNodes());
   }
 }
 

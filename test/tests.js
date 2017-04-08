@@ -50,7 +50,7 @@ const provaScript = function(addr) {
 };
 
 const nullDataScript = function(hex) {
-  return prova.script.nullData.output.encode(new Buffer(hex, 'hex'))
+  return prova.script.nullData.output.encode(new Buffer(hex, 'hex'));
 };
 
 const newTxBuilder = function() {
@@ -1211,12 +1211,13 @@ describe('Functional Tests', () => {
 
 // Network test helper functions
 //
-const expectNetworkConvergenceToHash = co(function *(nodes, expectedHash, limitMilliseconds) {
+const expectNetworkConvergence = co(function *(nodes, limitMilliseconds, nodeTestFunc) {
+  nodes = nodes.slice(0); // copy nodes to not affect caller
   const start = new Date();
   while (nodes.length) {
     const node = nodes.shift();
-    const hash = yield node.getbestblockhash();
-    if (hash !== expectedHash) {
+    const success = yield nodeTestFunc(node);
+    if (!success) {
       nodes.push(node);
       yield Promise.delay(100);
     }
@@ -1227,7 +1228,25 @@ const expectNetworkConvergenceToHash = co(function *(nodes, expectedHash, limitM
   return true;
 });
 
-const expectNetworkConvergence = co(function *(nodes, limitMilliseconds) {
+const expectNetworkConvergenceToHash = function(nodes, limitMilliseconds, expectedHash) {
+  return expectNetworkConvergence(nodes, limitMilliseconds, co(function *(node) {
+    return expectedHash === (yield node.getbestblockhash());
+  }));
+};
+
+const expectNetworkConvergenceToHeight = function(nodes, limitMilliseconds, expectedHeight) {
+  return expectNetworkConvergence(nodes, limitMilliseconds, co(function *(node) {
+    return expectedHeight === (yield node.getinfo()).blocks;
+  }));
+};
+
+const expectNetworkConvergenceToMempoolSize = function(nodes, limitMilliseconds, expectedSize) {
+  return expectNetworkConvergence(nodes, limitMilliseconds, co(function *(node) {
+    return expectedSize === (yield node.getmempoolinfo()).size;
+  }));
+};
+
+const expectNetworkConvergenceToUnknownHeight = co(function *(nodes, limitMilliseconds) {
   const start = new Date();
   while (true) {
     const hashes = yield Promise.map(nodes, (node) => node.getbestblockhash());
@@ -1247,6 +1266,12 @@ const expectNetworkConvergence = co(function *(nodes, limitMilliseconds) {
 describe('Network Tests', () => {
 
   let cluster;
+  let provisionKeys;
+  let issueKeys;
+  let issueTxid;
+  let issueVouts;
+  const timeout = 15000;
+  const issueAmount = 1e9;
 
   before(co(function *() {
     cluster = new ProvaTestCluster({ size: 8, basePort: 4000 });
@@ -1261,23 +1286,131 @@ describe('Network Tests', () => {
 
   it('blocks generated on 1 node are seen on all other nodes', co(function *() {
     const node = cluster.nodes[0];
-    yield node.generate(1);
+    yield node.generate(100);
     const hash = yield node.getbestblockhash();
-    const result = yield expectNetworkConvergenceToHash(cluster.nodes.slice(1), hash, 30000);
+    const result = yield expectNetworkConvergenceToHash(cluster.nodes.slice(1), timeout, hash);
     result.should.be.true();
   }));
 
-  it('network should converge if 2 nodes each generate separate blockchains', co(function *() {
-    const genNodes = cluster.nodes.slice(0, 4);
-    // const evenNodes = cluster.nodes.filter((node, idx) => idx % 2 === 0).slice(0, 2);
+  it('network should converge if half the nodes each generate separate blockchains, while 1 node stops and reconnects', co(function *() {
+    const halfSize = cluster.nodes.length / 2;
+    const genNodes = cluster.nodes.slice(1, halfSize + 1);
+    const stoppedNode = cluster.nodes[0];
+    yield stoppedNode.stop();
     yield Promise.map(genNodes, (node, idx) => node.generate(10 * (1+idx)));
-    const result = yield expectNetworkConvergence(cluster.nodes, 300000);
+    const expectedHeight = 100 + 10 * halfSize;
+
+    let result = yield expectNetworkConvergenceToHeight(cluster.nodes.slice(1), timeout, expectedHeight);
     result.should.be.true();
+
+    // restart node 0
+    yield stoppedNode.start();
+
+    // Should rejoin the group and converge, even without reconnect (other nodes will reconnect to it)
+    result = yield expectNetworkConvergenceToHeight(cluster.nodes, timeout, expectedHeight);
+    result.should.be.true();
+
+    // re-add outgoing
+    yield stoppedNode.reconnect();
   }));
 
-  // tx propagation
-  // tx to ASP key that has just been created
-  // forks (longest wins)
-  //
+  it('admin transaction and state should propagate to all nodes', co(function *() {
+    const node = cluster.nodes[0];
+    // Set up 2 provision keys
+    provisionKeys = randomKeys(2);
+    const tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
+      provisionKeys.forEach(function(key) {
+        builder.addOutput(adminKeyScript(AdminOp.ProvisionKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
+      });
+    });
+    yield node.sendrawtransaction(tx);
+
+    // All nodes should get tx in mempool
+    let result = yield expectNetworkConvergenceToMempoolSize(cluster.nodes, timeout, 1);
+    result.should.be.true();
+
+    yield node.generate(1);
+
+    // Memory pool should be empty on all
+    result = yield expectNetworkConvergenceToMempoolSize(cluster.nodes, timeout, 0);
+    result.should.be.true();
+
+    // All nodes at same height
+    result = yield expectNetworkConvergenceToUnknownHeight(cluster.nodes, 1000);
+    result.should.be.true();
+
+    // All nodes should have same set of provision keys
+    result = yield expectNetworkConvergence(cluster.nodes, 1000, co(function *(node) {
+      const nodeKeys = (yield node.getadmininfo()).provisionkeys;
+      return (
+        nodeKeys &&
+        nodeKeys.length === 2 &&
+        _.find(nodeKeys, provisionKeys[0].getPublicKeyBuffer().toString('hex')) &&
+        _.find(nodeKeys, provisionKeys[1].getPublicKeyBuffer().toString('hex'))
+      );
+    }));
+  }));
+
+  it('ordinary transactions', co(function *() {
+    const node = cluster.nodes[0];
+    // Set up 2 issue keys
+    issueKeys = randomKeys(2);
+    let tx = yield makeAdminTx(node, Thread.Root, rootKeys, function(builder) {
+      issueKeys.forEach(function(key) {
+        builder.addOutput(adminKeyScript(AdminOp.IssueKeyAdd, key.getPublicKeyBuffer().toString('hex')), 0);
+      });
+    });
+    yield node.sendrawtransaction(tx);
+    yield node.generate(1);
+
+    // Issue some coins
+    tx = yield makeAdminTx(node, Thread.Issue, issueKeys, function(builder) {
+      _.range(0,20).forEach(() => builder.addOutput(node.miningAddress.toScript(), issueAmount));
+    });
+    issueTxid = yield node.sendrawtransaction(tx);
+    issueVouts = _.range(1, 21);
+    yield node.generate(1);
+
+    // Wait for chain to converge
+    result = yield expectNetworkConvergenceToUnknownHeight(cluster.nodes, timeout, 0);
+    result.should.be.true();
+
+    const txs = [];
+    const txids = [];
+    var prevTxid = issueTxid;
+    var prevVout = issueVouts.shift();
+    // Make a chain of 8 transactions
+    script = node.miningAddress.toScript();
+    _.range(0, 8).forEach(function() {
+      const builder = newTxBuilder();
+      builder.addInput(prevTxid, prevVout);
+      builder.addOutput(script, issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      const tx = builder.build();
+      txs.push(tx);
+      prevTxid = tx.getId();
+      txids.push(prevTxid);
+      prevVout = 0;
+    });
+
+    while (txs.length) {
+      const tx = txs.shift();
+      // submit from different node
+      const txid = yield cluster.nodes[1].sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+    }
+
+    // Memory pool should converge to 8 txs
+    result = yield expectNetworkConvergenceToMempoolSize(cluster.nodes, timeout, 8);
+    result.should.be.true();
+
+    yield node.generate(1);
+    result = yield expectNetworkConvergenceToMempoolSize(cluster.nodes, timeout, 0);
+    result.should.be.true();
+
+    // Wait for chain to converge
+    result = yield expectNetworkConvergenceToUnknownHeight(cluster.nodes, 1000);
+    result.should.be.true();
+  }));
 
 });
