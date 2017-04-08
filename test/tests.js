@@ -1413,4 +1413,40 @@ describe('Network Tests', () => {
     result.should.be.true();
   }));
 
+  it('all nodes generating while doing transactions and submitting on different nodes', co(function *() {
+    yield Promise.map(cluster.nodes, (node) => node.setgenerate(true, 1));
+
+    let submitNode = 0;
+    let tx, txid;
+    while (issueVouts.length) {
+      const builder = newTxBuilder();
+      script = cluster.nodes[0].miningAddress.toScript();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(script, issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      tx = builder.build();
+      txid = yield cluster.nodes[submitNode].sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      submitNode = (submitNode + 1) % cluster.nodes.length;
+    }
+    // Delay enough time for all transactions to propagate
+    yield Promise.delay(8000);
+
+    // Turn off mining on all nodes except first
+    yield Promise.map(cluster.nodes.slice(1), (node) => node.setgenerate(false));
+    // Wait half a second, then turn off mining on first node (ensures chains of different lengths)
+    yield Promise.delay(500);
+    yield cluster.nodes[0].setgenerate(false);
+
+    // Wait for chain to converge
+    let result = yield expectNetworkConvergenceToUnknownHeight(cluster.nodes, timeout);
+    result.should.be.true();
+
+    result = yield expectNetworkConvergenceToMempoolSize(cluster.nodes, 1000, 0);
+    result.should.be.true();
+
+    // last tx should be known on all nodes
+    yield Promise.map(cluster.nodes, (node) => node.getrawtransaction(txid));
+  }));
+
 });
