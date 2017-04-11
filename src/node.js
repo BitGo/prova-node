@@ -7,7 +7,7 @@ const execAsync = Promise.promisify(require('child_process').exec);
 const cuid = require('cuid');
 const fs = require('fs');
 const util = require('util');
-const prova = require('prova');
+const prova = require('prova-lib');
 const _ = require('lodash');
 
 class ProvaNode {
