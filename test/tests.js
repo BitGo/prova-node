@@ -905,7 +905,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail sending to address with 2 identical valid keyids', co(function *() {
-      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), 1, 1);
+      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), [1, 1]);
       const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
       builder.addOutput(badAddr.toScript(), issueAmount);
@@ -915,7 +915,7 @@ describe('Functional Tests', () => {
     }));
 
     it('should fail sending to address with an invalid keyid', co(function *() {
-      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), 1, 99);
+      const badAddr = new prova.Address(prova.ECPair.makeRandom().getPublicKeyBuffer(), [1, 99]);
       const builder = newTxBuilder();
       builder.addInput(issueTxid, issueVouts[0]);
       builder.addOutput(badAddr.toScript(), issueAmount);
@@ -1062,7 +1062,7 @@ describe('Functional Tests', () => {
 
       // Define a new address which uses a yet-to-be-added ASP key
       const addrKey = randomKey();
-      const addr = new prova.Address(addrKey.getPublicKeyBuffer(), 1, nextKeyId, prova.networks.rmgTest);
+      const addr = new prova.Address(addrKey.getPublicKeyBuffer(), [1, nextKeyId], prova.networks.rmgTest);
 
       // Build a tx sending to it
       let builder = newTxBuilder();
@@ -1124,6 +1124,108 @@ describe('Functional Tests', () => {
       rootKeys.forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
       tx = builder.build();
       yield expectSendError(node, tx.toHex(), 'output 0 has unknown keyID');
+
+      nextKeyId++;
+    }));
+
+    it('should be able to spend to/from an address with more than 2 keyids', co(function *() {
+      // Add the new ASP key
+      aspKey = randomKey();
+      let tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, aspKey.getPublicKeyBuffer().toString('hex'), nextKeyId), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+
+      const addrKey = randomKey();
+      const addr = new prova.Address(addrKey.getPublicKeyBuffer(), [1, 2, nextKeyId], prova.networks.rmgTest);
+
+      // Build a tx sending to it
+      let builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(addr.toScript(), issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.build();
+      let txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      // mine it
+      yield node.generate(1);
+      let txdesc = yield node.getrawtransaction(txid, 1);
+      // Ensure that the node reports the non-standard address correctly
+      txdesc.vout[0].scriptPubKey.addresses[0].should.equal(addr.toString());
+
+      // should not be able to move the funds with only 2 signatures
+      builder = newTxBuilder();
+      builder.addInput(txid, 0);
+      builder.addOutput(script, issueAmount);
+      [addrKey, aspKey].forEach((key) => builder.sign(0, key, addr.toScript(), issueAmount));
+      tx = builder.buildIncomplete();
+      yield expectSendError(node, tx.toHex(), 'TX rejected: failed to validate input');
+
+      // should be able to move the funds by signing with a third key
+      builder.sign(0, rootKeys[0], addr.toScript(), issueAmount);
+      tx = builder.build();
+      txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      yield node.generate(1);
+
+      nextKeyId++;
+    }));
+
+    it('should be able to spend to/from a general Prova script', co(function *() {
+      // Add the new ASP key
+      aspKey = randomKey();
+      let tx = yield makeAdminTx(node, Thread.Provision, provisionKeys, function(builder) {
+        builder.addOutput(adminKeyScript(AdminOp.ASPKeyAdd, aspKey.getPublicKeyBuffer().toString('hex'), nextKeyId), 0);
+      });
+      yield node.sendrawtransaction(tx);
+      yield node.generate(1);
+
+      const addrKeys = [randomKey(), randomKey()];
+
+      // First create "normal" address, then we'll massage it to fix up the script
+      const addr = new prova.Address(addrKeys[0].getPublicKeyBuffer(), [1, 2, nextKeyId], prova.networks.rmgTest);
+      const scriptParts = prova.script.decompile(addr.toScript());
+
+      // Increase n to 5 -- this will make a 3-of-5 script
+      scriptParts[scriptParts.length - 2]++;
+
+      // Create and add the second key hash
+      addrKeys[1].getPublicKeyBuffer();
+      const encodedPublicKey = addrKeys[1].__Q.getEncoded(true);
+      const keyHash = bitcoin.crypto.hash160(encodedPublicKey);
+      scriptParts.splice(2, 0, keyHash);
+
+      // Build the final script
+      const script = prova.script.compile(scriptParts);
+
+      // Build a tx sending to it
+      let builder = newTxBuilder();
+      builder.addInput(issueTxid, issueVouts.shift());
+      builder.addOutput(script, issueAmount);
+      rootKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      tx = builder.build();
+      let txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      // mine it
+      yield node.generate(1);
+      let txdesc = yield node.getrawtransaction(txid, 1);
+      txdesc.vout[0].scriptPubKey.should.not.have.property('addresses');
+
+      // should not be able to move the funds with only 2 signatures
+      builder = newTxBuilder();
+      builder.addInput(txid, 0);
+      builder.addOutput(script, issueAmount);
+      addrKeys.forEach((key) => builder.sign(0, key, script, issueAmount));
+      tx = builder.buildIncomplete();
+      yield expectSendError(node, tx.toHex(), 'TX rejected: failed to validate input');
+
+      // should be able to move the funds by signing with a third key
+      builder.sign(0, aspKey, addr.toScript(), issueAmount);
+      tx = builder.build();
+      txid = yield node.sendrawtransaction(tx.toHex());
+      txid.should.equal(tx.getId());
+      yield node.generate(1);
 
       nextKeyId++;
     }));

@@ -115,7 +115,7 @@ class ProvaTestNode extends ProvaNode {
     this.port = port;
 
     this.addressKey = prova.ECPair.makeRandom(prova.networks.rmgTest);
-    this.miningAddress = new prova.Address(this.addressKey.getPublicKeyBuffer(), 1, 2, prova.networks.rmgTest);
+    this.miningAddress = new prova.Address(this.addressKey.getPublicKeyBuffer(), [1, 2], prova.networks.rmgTest);
 
     this.validateKeys = [
       '4015289a228658047520f0d0abe7ad49abc77f6be0be63b36b94b83c2d1fd977',
